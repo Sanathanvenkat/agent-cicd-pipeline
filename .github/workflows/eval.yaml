@@ -1,0 +1,97 @@
+# .github/workflows/eval.yml
+# ───────────────────────────
+# Runs on every PR that touches prompts/ or evals/
+# Blocks merge if prompt quality regresses below baseline.
+
+name: Prompt Eval CI
+
+on:
+  pull_request:
+    paths:
+      - "prompts/**"
+      - "evals/**"
+      - "run_evals.py"
+  push:
+    branches:
+      - main
+
+jobs:
+  prompt-evals:
+    name: Run Prompt Evaluations
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js (for Promptfoo)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Promptfoo
+        run: npm install -g promptfoo
+
+      - name: Run Promptfoo evals
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          promptfoo eval \
+            --config evals/promptfoo.yaml \
+            --output eval_results.json \
+            --ci
+        # --ci flag: exits with code 1 if pass rate < threshold
+        # This blocks the PR merge automatically
+
+      - name: Check regression against baseline
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python run_evals.py --prompt v2
+        # Exits 1 → PR blocked if scores regress
+
+      - name: Upload eval results
+        uses: actions/upload-artifact@v4
+        if: always()   # upload even on failure so we can inspect
+        with:
+          name: eval-results
+          path: |
+            eval_results.json
+            eval_results_v2.json
+
+      - name: Comment PR with results
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## 📊 Prompt Eval Results\n\n';
+            try {
+              const results = JSON.parse(fs.readFileSync('eval_results.json', 'utf8'));
+              const stats   = results.stats || {};
+              const total   = (stats.successes || 0) + (stats.failures || 0);
+              const rate    = total > 0 ? ((stats.successes || 0) / total * 100).toFixed(1) : 'N/A';
+              comment += `| Metric | Value |\n|---|---|\n`;
+              comment += `| Pass Rate | ${rate}% |\n`;
+              comment += `| Passed | ${stats.successes || 0} |\n`;
+              comment += `| Failed | ${stats.failures  || 0} |\n`;
+              comment += `| Total  | ${total} |\n\n`;
+              comment += rate >= 80
+                ? '✅ **No regression — safe to merge**'
+                : '❌ **Regression detected — merge blocked**';
+            } catch(e) {
+              comment += '⚠️ Could not parse eval results.';
+            }
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              body:         comment,
+            });

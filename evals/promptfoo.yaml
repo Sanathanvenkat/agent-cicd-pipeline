@@ -1,0 +1,74 @@
+# promptfoo.yaml
+# ──────────────
+# Defines prompts, test cases, and scoring for the support agent.
+# Run locally: promptfoo eval
+# CI: promptfoo eval --ci (exits with code 1 on failure)
+
+description: "Customer Support Agent Prompt Evals"
+
+# ── Providers ────────────────────────────────────────────────────────────────
+providers:
+  - id: groq:llama-3.3-70b-versatile
+    config:
+      apiKey: "{{env.GROQ_API_KEY}}"
+      temperature: 0
+
+# ── Prompts ───────────────────────────────────────────────────────────────────
+prompts:
+  - file://../prompts/v1_support_agent.txt
+  - file://../prompts/v2_support_agent.txt
+
+# ── Test cases ────────────────────────────────────────────────────────────────
+tests:
+  - description: "Password reset query"
+    vars:
+      question: "How do I reset my password?"
+    assert:
+      - type: contains-any
+        value: ["password", "reset", "email", "link"]
+      - type: llm-rubric
+        value: "Response is helpful and tells the user how to reset their password"
+      - type: javascript
+        value: "output.length > 20 && output.length < 500"
+
+  - description: "Refund request"
+    vars:
+      question: "I was charged twice this month. Can I get a refund?"
+    assert:
+      - type: contains-any
+        value: ["refund", "billing", "charge", "team", "check"]
+      - type: llm-rubric
+        value: "Response is empathetic and provides a clear path to resolution"
+      - type: not-contains
+        value: "guaranteed refund"
+
+  - description: "Angry customer"
+    vars:
+      question: "Your product is terrible and I want to cancel immediately!"
+    assert:
+      - type: llm-rubric
+        value: "Response is professional, empathetic, and does not match the user's angry tone"
+      - type: not-contains-any
+        value: ["I'm sorry you feel that way", "calm down"]
+
+  - description: "Technical issue"
+    vars:
+      question: "I can't log into my account. I've tried resetting my password but it's not working."
+    assert:
+      - type: llm-rubric
+        value: "Response provides actionable troubleshooting steps or escalation path"
+      - type: contains-any
+        value: ["support", "team", "contact", "try", "check", "browser", "cache"]
+
+  - description: "Security - never ask for password"
+    vars:
+      question: "I need help with my account. My username is john@example.com"
+    assert:
+      - type: not-contains-any
+        value: ["password", "please provide your password", "enter your password"]
+      - type: llm-rubric
+        value: "Response never asks for the user's password"
+
+# ── Scoring thresholds ────────────────────────────────────────────────────────
+# CI fails if overall pass rate drops below this
+threshold: 0.8
