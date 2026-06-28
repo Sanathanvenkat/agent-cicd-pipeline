@@ -1,0 +1,72 @@
+name: Prompt Eval CI
+
+on:
+  pull_request:
+    paths:
+      - "prompts/**"
+      - "evals/**"
+      - "run_evals.py"
+  push:
+    branches:
+      - main
+
+jobs:
+  prompt-evals:
+    name: Run Prompt Evaluations
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run evals on v1 (save baseline)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python run_evals.py --prompt v1
+
+      - name: Run evals on v2 (regression check)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python run_evals.py --prompt v2
+        # exits 1 → blocks PR if regression detected
+
+      - name: Upload eval results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: "eval_results_*.json"
+
+      - name: Comment PR with results
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## 📊 Prompt Eval Results\n\n';
+            try {
+              const v1 = JSON.parse(fs.readFileSync('eval_results_v1.json', 'utf8'));
+              const v2 = JSON.parse(fs.readFileSync('eval_results_v2.json', 'utf8'));
+              comment += `| Prompt | Pass Rate | Passed | Total |\n|---|---|---|---|\n`;
+              comment += `| v1 (baseline) | ${(v1.summary.pass_rate*100).toFixed(0)}% | ${v1.summary.passed} | ${v1.summary.total} |\n`;
+              comment += `| v2 (current)  | ${(v2.summary.pass_rate*100).toFixed(0)}% | ${v2.summary.passed} | ${v2.summary.total} |\n\n`;
+              comment += v2.summary.pass_rate >= 0.8
+                ? '✅ **No regression — safe to merge**'
+                : '❌ **Regression detected — merge blocked**';
+            } catch(e) {
+              comment += '⚠️ Could not parse eval results.';
+            }
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment,
+            });
